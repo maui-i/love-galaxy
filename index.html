@@ -151,14 +151,20 @@
     // Detail level: computers get the most particles, phones a bit fewer so they stay smooth.
     // Raise these to add more particles; smaller dots (DOT_SCALE) make it look finer.
     const isPhone = window.matchMedia("(pointer: coarse)").matches;
-    const DETAIL = isPhone ? 1.6 : 3;
-    const DOT_SCALE = isPhone ? 0.85 : 0.7;
+    // Far more particles and finer dots on computers; phones get fewer so they stay smooth
+    const DETAIL = isPhone ? 2 : 5;
+    const DOT_SCALE = isPhone ? 0.75 : 0.5;
     const many = (n) => Math.round(n * DETAIL);
     const TAU = Math.PI * 2;
 
     // ===== Scene, camera, controls =====
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3)); // full sharpness on Retina and phone screens
+    // Computers render at least 3840 pixels wide (4K), whatever the screen, then the browser scales it down.
+    // Phones already have sharp screens, so they use their own pixel density to stay smooth.
+    const pixelRatio4k = () => isPhone
+      ? Math.min(window.devicePixelRatio, 3)
+      : Math.min(4, Math.max(window.devicePixelRatio, 3840 / innerWidth));
+    renderer.setPixelRatio(pixelRatio4k());
     renderer.setSize(innerWidth, innerHeight);
     document.body.appendChild(renderer.domElement);
 
@@ -587,6 +593,7 @@
     const FLY_IN = 5; // seconds for the camera to swoop in
     const clock = new THREE.Clock();
     let simTime = 0; // animation time, slowed down for people who prefer less motion
+    let saveFrame = false; // set by pressing P
     const easeInOut = (v) => (v < 0.5 ? 4 * v * v * v : 1 - Math.pow(-2 * v + 2, 3) / 2);
 
     // Heartbeat: two quick bumps, then a rest
@@ -629,6 +636,13 @@
 
       photonRing.quaternion.copy(camera.quaternion);
       renderer.render(scene, camera);
+      if (saveFrame) {
+        saveFrame = false;
+        const link = document.createElement("a");
+        link.download = "galaxy-4k.png";
+        link.href = renderer.domElement.toDataURL("image/png"); // read right after drawing, before the frame is cleared
+        link.click();
+      }
       requestAnimationFrame(animate);
     }
     animate();
@@ -636,8 +650,15 @@
     window.addEventListener("resize", () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
+      renderer.setPixelRatio(pixelRatio4k());
       renderer.setSize(innerWidth, innerHeight);
       shared.uScale.value = innerHeight / 2;
+      shared.uPixelRatio.value = renderer.getPixelRatio();
+    });
+
+    // Press P to save the current frame as a 4K picture
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "p" || e.key === "P") saveFrame = true;
     });
   </script>
 </body>
