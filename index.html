@@ -64,6 +64,8 @@
       place-items: center;
       background: rgb(5 0 5 / 0.62);
       transition: opacity 0.9s ease;
+      cursor: pointer; /* the whole screen starts it */
+      -webkit-tap-highlight-color: transparent;
     }
     .start.gone {
       opacity: 0;
@@ -440,12 +442,19 @@
     let startedAt = null; // when the start button was pressed
     const startScreen = document.getElementById("start");
     const startBtn = document.getElementById("start-btn");
-    startBtn.addEventListener("click", () => {
+    function start() {
       if (startedAt !== null) return;
       startedAt = clock.elapsedTime;
       startBtn.classList.add("pressed");
       setTimeout(() => startScreen.classList.add("gone"), 300);
+    }
+    // A click or tap anywhere on the start screen starts it, not just on the heart
+    startScreen.addEventListener("click", start);
+    // Any key works too (Enter and Space already press the focused button)
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") start();
     });
+    startBtn.focus({ preventScroll: true });
 
     // ===== Animation =====
     const FLY_IN = 5; // seconds for the camera to swoop in
