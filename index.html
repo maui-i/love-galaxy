@@ -250,27 +250,112 @@
       return sprite;
     }
 
-    // ===== Galaxy disk: spiral arms of pink particles =====
-    const galaxy = new THREE.Group();
-    scene.add(galaxy);
-    {
-      const count = many(45000), radius = 32, arms = 3;
-      const inside = new THREE.Color(COLORS.galaxyInside);
-      const outside = new THREE.Color(COLORS.galaxyOutside);
-      const white = new THREE.Color("#ffffff");
-      const pos = [], col = [];
-      for (let i = 0; i < count; i++) {
-        const r = 3 + Math.pow(Math.random(), 1.5) * radius;
-        const angle = ((i % arms) / arms) * TAU + r * 0.22;
-        const spread = 0.45 * r;
-        const jitter = () => Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? -1 : 1) * spread;
-        pos.push(Math.cos(angle) * r + jitter(), jitter() * 0.12, Math.sin(angle) * r + jitter());
-        const c = inside.clone().lerp(outside, r / (radius + 3));
-        if (Math.random() < 0.07) c.copy(white);
-        col.push(c.r, c.g, c.b);
-      }
-      galaxy.add(makePoints(pos, col, 0.22 * DOT_SCALE));
+    // ===== Moving particles, computed on the graphics card =====
+    // Shared by every moving particle system, so one update per frame moves them all
+    const shared = {
+      uTime: { value: 0 },
+      uScale: { value: innerHeight / 2 },
+      uPixelRatio: { value: renderer.getPixelRatio() },
+    };
+    const POINT_FRAG = `
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = pow(clamp(1.0 - d, 0.0, 1.0), 1.6);
+        gl_FragColor = vec4(vColor, a * vAlpha);
+      }`;
+    const POINT_SIZE = `
+      vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+      gl_PointSize = uSize * uPixelRatio * uScale / -mv.z;
+      gl_Position = projectionMatrix * mv;`;
+
+    function pointsMaterial(vertexShader, uniforms) {
+      return new THREE.ShaderMaterial({
+        uniforms: { ...shared, ...uniforms },
+        vertexShader,
+        fragmentShader: POINT_FRAG,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
     }
+
+    // Gas spiraling into the black hole. Each particle falls from the outer edge to the hole,
+    // orbiting faster the closer it gets, then starts again at the edge.
+    const SWIRL_VERT = `
+      uniform float uTime, uScale, uPixelRatio, uSize;
+      uniform float uRin, uRout, uInflow, uWind, uSpread, uThick, uSpin, uBeam;
+      uniform vec3 uOuter, uInner, uHot;
+      attribute vec4 aRand;
+      attribute float aWhite;
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        // p goes from 0 at the outer edge to 1 at the hole
+        float p = fract(aRand.x + uTime * uInflow);
+        float r = uRin + (uRout - uRin) * pow(1.0 - p, 1.4);
+        // The angle keeps growing as it falls, so the inside spins faster and the arms stay spiral
+        float ang = aRand.y + uWind * log(uRout / r) + uTime * uSpin;
+        vec3 pos = vec3(cos(ang) * r, 0.0, sin(ang) * r);
+        pos.xz += aRand.zw * uSpread * r;
+        pos.y = (aRand.z + aRand.w) * uThick * (1.0 + 0.05 * r);
+
+        float heat = 1.0 - smoothstep(uRin, uRout, r); // 1 at the hole, 0 at the edge
+        vec3 col = mix(uOuter, uInner, smoothstep(0.0, 0.7, heat));
+        col = mix(col, uHot, smoothstep(0.7, 1.0, heat));
+        col = mix(col, vec3(1.0), aWhite);
+        // Doppler beaming: gas moving toward the camera looks brighter
+        vec3 dir = vec3(-sin(ang), 0.0, cos(ang));
+        float toward = normalize((modelViewMatrix * vec4(dir, 0.0)).xyz).z;
+        vColor = col * (1.0 + uBeam * toward * heat) * (0.75 + 0.5 * heat);
+        // Fade in at the edge, vanish into the hole
+        vAlpha = smoothstep(0.0, 0.05, p) * (1.0 - smoothstep(0.95, 1.0, p));
+        ${POINT_SIZE}
+      }`;
+
+    function makeSwirl(o) {
+      const n = many(o.count);
+      const rand = new Float32Array(n * 4), white = new Float32Array(n);
+      const jitter = () => Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? -1 : 1);
+      for (let i = 0; i < n; i++) {
+        rand[i * 4] = Math.random();
+        rand[i * 4 + 1] = o.arms ? ((i % o.arms) / o.arms) * TAU : Math.random() * TAU;
+        rand[i * 4 + 2] = jitter();
+        rand[i * 4 + 3] = jitter();
+        white[i] = Math.random() < o.white ? 1 : 0;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+      geo.setAttribute("aRand", new THREE.BufferAttribute(rand, 4));
+      geo.setAttribute("aWhite", new THREE.BufferAttribute(white, 1));
+      const points = new THREE.Points(geo, pointsMaterial(SWIRL_VERT, {
+        uSize: { value: o.size * DOT_SCALE },
+        uRin: { value: o.rin },
+        uRout: { value: o.rout },
+        uInflow: { value: o.inflow },
+        uWind: { value: o.wind },
+        uSpread: { value: o.spread },
+        uThick: { value: o.thick },
+        uSpin: { value: o.spin },
+        uBeam: { value: o.beam },
+        uOuter: { value: new THREE.Color(o.outer) },
+        uInner: { value: new THREE.Color(o.inner) },
+        uHot: { value: new THREE.Color(o.hot) },
+      }));
+      points.frustumCulled = false; // positions are worked out on the graphics card
+      return points;
+    }
+
+    // ===== Galaxy: three spiral arms slowly draining into the center =====
+    const galaxy = makeSwirl({
+      count: 45000, arms: 3, rin: 2.3, rout: 34,
+      inflow: 1 / 150, // one trip from the edge to the hole takes about 2.5 minutes
+      wind: 2.6, spread: 0.4, thick: 0.35, spin: 0.01, beam: 0.6,
+      outer: COLORS.galaxyOutside, inner: COLORS.galaxyInside, hot: COLORS.ring,
+      white: 0.07, size: 0.22,
+    });
+    scene.add(galaxy);
 
     // Background stars
     {
@@ -284,24 +369,35 @@
       scene.add(makePoints(pos, col, 0.9, 0.8));
     }
 
-    // ===== Black hole with a bright spinning ring =====
-    const hole = new THREE.Mesh(new THREE.SphereGeometry(2, 48, 48), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-    hole.position.y = 0.4;
+    // ===== Black hole =====
+    const HOLE_Y = 0.4;
+    const hole = new THREE.Mesh(new THREE.SphereGeometry(2, 64, 64), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    hole.position.y = HOLE_Y;
     scene.add(hole);
 
-    const ring = new THREE.Group();
-    scene.add(ring);
+    // Accretion disk: hot, fast gas just outside the hole
+    const disk = makeSwirl({
+      count: 12000, arms: 0, rin: 2.1, rout: 8,
+      inflow: 1 / 18, wind: 3.5, spread: 0.06, thick: 0.06, spin: 0.15, beam: 0.9,
+      outer: COLORS.galaxyInside, inner: "#ff9ccc", hot: "#fff2f7",
+      white: 0.1, size: 0.2,
+    });
+    disk.position.y = HOLE_Y;
+    scene.add(disk);
+
+    // Photon ring: light bent all the way around the hole, so it always faces you
+    const photonRing = new THREE.Group();
+    photonRing.position.y = HOLE_Y;
+    scene.add(photonRing);
     {
-      const pos = [], col = [];
-      const hot = new THREE.Color(COLORS.ring), pink = new THREE.Color(COLORS.galaxyInside);
-      for (let i = 0; i < many(9000); i++) {
-        const r = 2.3 + Math.pow(Math.random(), 2) * 5;
-        const a = Math.random() * TAU;
-        pos.push(Math.cos(a) * r, 0.4 + (Math.random() - 0.5) * 0.25, Math.sin(a) * r);
-        const c = hot.clone().lerp(pink, (r - 2.3) / 5);
-        col.push(c.r, c.g, c.b);
-      }
-      ring.add(makePoints(pos, col, 0.2 * DOT_SCALE));
+      const ringPoints = makeSwirl({
+        count: 9000, arms: 0, rin: 2.1, rout: 3.3,
+        inflow: 1 / 60, wind: 1, spread: 0.03, thick: 0, spin: 0.5, beam: 0.8,
+        outer: "#ff8cc4", inner: "#ffd6e8", hot: "#ffffff",
+        white: 0.2, size: 0.26,
+      });
+      ringPoints.rotation.x = Math.PI / 2; // lay the ring in the plane facing the camera
+      photonRing.add(ringPoints);
     }
 
     // Pink glow behind everything in the middle
@@ -316,22 +412,22 @@
       g.fillRect(0, 0, 128, 128);
       const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending, depthWrite: false }));
       glow.scale.set(22, 22, 1);
-      glow.position.y = 0.4;
+      glow.position.y = HOLE_Y;
       scene.add(glow);
     }
 
-    // ===== Heart made of particles =====
+    // ===== Heart made of shimmering particles =====
     const HEART_Y = 17, HEART_SIZE = 6;
     const heart = new THREE.Group();
     heart.position.y = HEART_Y;
     scene.add(heart);
     {
-      const pos = [], col = [];
+      const pos = [], col = [], seeds = [];
       const body = new THREE.Color(COLORS.heart), edge = new THREE.Color(COLORS.heartEdge);
       // A 3D heart surface: points where f <= 0 are inside
       const f = (x, y, z) => Math.pow(x * x + 2.25 * z * z + y * y - 1, 3) - x * x * y * y * y - 0.1125 * z * z * y * y * y;
-      let placed = 0;
-      while (placed < many(16000)) {
+      const total = many(16000);
+      while (seeds.length < total) {
         const x = (Math.random() - 0.5) * 2.6, y = (Math.random() - 0.5) * 2.6, z = (Math.random() - 0.5) * 2;
         const v = f(x, y, z);
         if (v > 0) continue;
@@ -340,70 +436,95 @@
         pos.push(x * HEART_SIZE, y * HEART_SIZE, z * HEART_SIZE);
         const c = nearEdge ? edge.clone().lerp(body, Math.random() * 0.6) : body;
         col.push(c.r, c.g, c.b);
-        placed++;
+        seeds.push(Math.random());
       }
-      heart.add(makePoints(pos, col, 0.2 * DOT_SCALE));
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute("aColor", new THREE.Float32BufferAttribute(col, 3));
+      geo.setAttribute("aSeed", new THREE.Float32BufferAttribute(seeds, 1));
+      heart.add(new THREE.Points(geo, pointsMaterial(`
+        uniform float uTime, uScale, uPixelRatio, uSize;
+        attribute vec3 aColor;
+        attribute float aSeed;
+        varying vec3 vColor;
+        varying float vAlpha;
+        void main() {
+          // Each particle drifts a little and twinkles on its own rhythm
+          vec3 drift = vec3(
+            sin(uTime * 1.1 + aSeed * 31.0),
+            sin(uTime * 0.9 + aSeed * 17.0),
+            sin(uTime * 1.3 + aSeed * 7.0)) * 0.12;
+          vec3 pos = position + drift;
+          vColor = aColor;
+          vAlpha = 0.7 + 0.3 * sin(uTime * 2.5 + aSeed * 60.0);
+          ${POINT_SIZE}
+        }`, { uSize: { value: 0.2 * DOT_SCALE } })));
     }
 
-    // ===== Swirling stream from the black hole up into the heart =====
-    const STREAM = many(3500);
-    const streamData = Array.from({ length: STREAM }, () => ({
-      u: Math.random(),
-      a: Math.random() * TAU,
-      speed: 0.08 + Math.random() * 0.12,
-      wobble: Math.random() * 0.8,
-    }));
-    const stream = (() => {
-      const pos = new Array(STREAM * 3).fill(0), col = [];
-      const a = new THREE.Color(COLORS.ring), b = new THREE.Color(COLORS.heart);
-      for (let i = 0; i < STREAM; i++) {
-        const c = a.clone().lerp(b, Math.random());
-        col.push(c.r, c.g, c.b);
+    // ===== Funnel of light rising from the black hole into the heart =====
+    const streamMat = (() => {
+      const n = many(3500);
+      const rand = new Float32Array(n * 4);
+      for (let i = 0; i < n; i++) {
+        rand[i * 4] = Math.random();
+        rand[i * 4 + 1] = Math.random() * TAU;
+        rand[i * 4 + 2] = Math.random();
+        rand[i * 4 + 3] = Math.random();
       }
-      const p = makePoints(pos, col, 0.17 * DOT_SCALE);
-      scene.add(p);
-      return p;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+      geo.setAttribute("aRand", new THREE.BufferAttribute(rand, 4));
+      const mat = pointsMaterial(`
+        uniform float uTime, uScale, uPixelRatio, uSize, uBottom, uTop;
+        uniform vec3 uFrom, uTo;
+        attribute vec4 aRand;
+        varying vec3 vColor;
+        varying float vAlpha;
+        void main() {
+          // Each particle rises at its own speed
+          float p = fract(aRand.x + uTime * (0.06 + 0.07 * aRand.w));
+          float y = mix(uBottom, uTop, p);
+          // Wide and lazy where it leaves the disk, tight and fast near the heart
+          float r = 0.1 + 3.0 * pow(1.0 - p, 2.4);
+          r += sin(uTime * 1.7 + aRand.z * 40.0 + p * 9.0) * 0.3 * (1.0 - p);
+          float ang = aRand.y + 12.0 * p + uTime * 0.8;
+          vec3 pos = vec3(cos(ang) * r, y, sin(ang) * r);
+          // The whole column sways gently, most in the middle
+          float bend = sin(p * 3.14159);
+          pos.x += sin(uTime * 0.45) * 0.6 * bend;
+          pos.z += cos(uTime * 0.37) * 0.4 * bend;
+          vColor = mix(uFrom, uTo, p);
+          vAlpha = smoothstep(0.0, 0.1, p) * (1.0 - smoothstep(0.9, 1.0, p)) * (0.6 + 0.4 * aRand.w);
+          ${POINT_SIZE}
+        }`, {
+        uSize: { value: 0.17 * DOT_SCALE },
+        uBottom: { value: HOLE_Y + 0.4 },
+        uTop: { value: HEART_Y - HEART_SIZE },
+        uFrom: { value: new THREE.Color(COLORS.ring) },
+        uTo: { value: new THREE.Color(COLORS.heart) },
+      });
+      const points = new THREE.Points(geo, mat);
+      points.frustumCulled = false;
+      scene.add(points);
+      return mat;
     })();
-    const STREAM_TOP = HEART_Y - HEART_SIZE * 1.05; // the heart's bottom tip
 
-    function updateStream(t, dt) {
-      const arr = stream.geometry.attributes.position.array;
-      for (let i = 0; i < STREAM; i++) {
-        const s = streamData[i];
-        s.u += s.speed * dt;
-        if (s.u > 1) s.u -= 1;
-        const y = 0.6 + s.u * (STREAM_TOP - 0.6);
-        // Wide where it leaves the hole, narrowing to a point at the heart
-        const r = (1 - s.u) * 2.4 + s.wobble * 0.3 * (1 - s.u);
-        const ang = s.a + s.u * 9 + t * 1.5;
-        arr[i * 3] = Math.cos(ang) * r;
-        arr[i * 3 + 1] = y;
-        arr[i * 3 + 2] = Math.sin(ang) * r;
-      }
-      stream.geometry.attributes.position.needsUpdate = true;
-    }
-
-    // ===== Words and little hearts orbiting with the galaxy =====
+    // ===== Words and little hearts orbiting the black hole =====
+    // Closer ones orbit faster, like everything else around it
     const floaters = [];
-    // Wait for the handwriting-style font so the words don't draw in a fallback font
+    function addFloater(sprite, r, angle, y, phase) {
+      scene.add(sprite);
+      floaters.push({ sprite, r, angle, y, phase, speed: 0.55 / Math.pow(r, 0.9) });
+    }
     // Fill at least 6 spots around the galaxy, repeating the words if there are fewer
     const SPOTS = Math.max(6, CONFIG.words.length);
     const placed = Array.from({ length: SPOTS }, (_, i) => CONFIG.words[i % CONFIG.words.length]);
+    // Wait for the font so the words don't draw in a fallback font
     document.fonts.load("600 128px 'Cormorant Garamond'").catch(() => {}).then(() => placed.forEach((word, i) => {
-      const sprite = textSprite(word, 2.1);
-      const angle = (i / SPOTS) * TAU;
-      const r = 11 + (i % 3) * 5;
-      sprite.position.set(Math.cos(angle) * r, 1.2 + (i % 2) * 1.5, Math.sin(angle) * r);
-      galaxy.add(sprite);
-      floaters.push({ sprite, baseY: sprite.position.y, phase: i * 1.3 });
+      addFloater(textSprite(word, 2.1), 11 + (i % 3) * 5, (i / SPOTS) * TAU, 1.2 + (i % 2) * 1.5, i * 1.3);
     }));
     ["💗", "💖", "💕", "💞", "💗", "💓"].forEach((emoji, i) => {
-      const sprite = emojiSprite(emoji, 2.2);
-      const angle = (i / 6) * TAU + 0.5;
-      const r = 9 + (i % 3) * 7;
-      sprite.position.set(Math.cos(angle) * r, 3 + (i % 2) * 2, Math.sin(angle) * r);
-      galaxy.add(sprite);
-      floaters.push({ sprite, baseY: sprite.position.y, phase: i * 2.1 });
+      addFloater(emojiSprite(emoji, 2.2), 9 + (i % 3) * 7, (i / 6) * TAU + 0.5, 3 + (i % 2) * 2, i * 2.1);
     });
 
     // ===== Title =====
@@ -465,6 +586,7 @@
     // ===== Animation =====
     const FLY_IN = 5; // seconds for the camera to swoop in
     const clock = new THREE.Clock();
+    let simTime = 0; // animation time, slowed down for people who prefer less motion
     const easeInOut = (v) => (v < 0.5 ? 4 * v * v * v : 1 - Math.pow(-2 * v + 2, 3) / 2);
 
     // Heartbeat: two quick bumps, then a rest
@@ -478,17 +600,19 @@
       const t = clock.elapsedTime;
       const speed = reduceMotion ? 0.3 : 1;
 
-      galaxy.rotation.y -= 0.04 * dt * speed;
-      ring.rotation.y -= 0.6 * dt * speed;
-      heart.rotation.y = Math.sin(t * 0.4) * 0.35;
+      simTime += dt * speed;
+      shared.uTime.value = simTime;
+      heart.rotation.y = Math.sin(simTime * 0.4) * 0.35;
       heart.scale.setScalar(1 + (reduceMotion ? 0 : 0.07 * beat(t)));
-      updateStream(t, dt * speed);
+      heart.position.y = HEART_Y + Math.sin(simTime * 0.6) * 0.35; // gentle float
+      streamMat.uniforms.uTop.value = heart.position.y - HEART_SIZE * heart.scale.y;
 
       // Seconds since the start button was pressed; the galaxy idles behind the start screen until then
       const since = startedAt === null ? 0 : t - startedAt;
       const fade = Math.min(1, Math.max(0, (since - 2) / 2));
       for (const f of floaters) {
-        f.sprite.position.y = f.baseY + Math.sin(t * 0.8 + f.phase) * 0.4;
+        f.angle += f.speed * dt * speed;
+        f.sprite.position.set(Math.cos(f.angle) * f.r, f.y + Math.sin(t * 0.8 + f.phase) * 0.4, Math.sin(f.angle) * f.r);
         f.sprite.material.opacity = fade;
       }
       if (since > 3) title.classList.add("show");
@@ -503,6 +627,7 @@
         controls.update();
       }
 
+      photonRing.quaternion.copy(camera.quaternion);
       renderer.render(scene, camera);
       requestAnimationFrame(animate);
     }
@@ -512,6 +637,7 @@
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
+      shared.uScale.value = innerHeight / 2;
     });
   </script>
 </body>
