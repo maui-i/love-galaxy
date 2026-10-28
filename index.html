@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A Galaxy for You</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;1,500&family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    /* One deliberate dark look: a pink galaxy at night, the same in every theme */
+    :root {
+      --bg: #050005;
+      --text: #ffe3ef;
+      color-scheme: dark;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+    canvas {
+      position: fixed;
+      inset: 0;
+      display: block;
+      touch-action: none;
+    }
+    .title {
+      position: fixed;
+      top: calc(3vh + env(safe-area-inset-top, 0px));
+      left: 0;
+      right: 0;
+      margin: 0;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      z-index: 1;
+      text-align: center;
+      color: var(--text);
+      font-family: "Cormorant Garamond", Georgia, serif;
+      font-style: italic;
+      font-size: clamp(1.8rem, 6vw, 3.4rem);
+      text-shadow: 0 0 18px rgb(255 80 160 / 0.7);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 2.5s ease;
+    }
+    .title.show { opacity: 1; }
+
+    /* ===== Start screen: an 8-bit heart is the start button ===== */
+    :root {
+      --px-pink: #ff3d8b;
+      --px-shine: #ffd6e8;
+      --px-shade: #c2185b;
+      --px-outline: #8a1048;
+      --px-font: "Press Start 2P", ui-monospace, Menlo, monospace;
+    }
+    .start {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      background: rgb(5 0 5 / 0.62);
+      transition: opacity 0.9s ease;
+    }
+    .start.gone {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .start-btn {
+      display: grid;
+      justify-items: center;
+      gap: 32px;
+      padding: 16px;
+      border: 0;
+      background: none;
+      color: var(--text);
+      font-family: var(--px-font);
+      font-size: clamp(0.75rem, 3vw, 1rem);
+      letter-spacing: 0.12em;
+      cursor: pointer;
+    }
+    .start-btn:focus-visible {
+      outline: 3px dashed var(--px-pink);
+      outline-offset: 10px;
+    }
+    /* Three wrappers so float, pulse and pop each own their transform */
+    .heart-float { animation: float 2.4s steps(8) infinite alternate; }
+    .heart-px {
+      display: block;
+      width: min(46vw, 200px);
+      animation: pulse 1.4s steps(1) infinite;
+      filter: drop-shadow(0 0 18px rgb(255 61 139 / 0.6));
+      transition: filter 0.2s;
+    }
+    .heart-px svg { display: block; width: 100%; height: auto; }
+    .heart-px .o { fill: var(--px-outline); }
+    .heart-px .p { fill: var(--px-pink); }
+    .heart-px .s { fill: var(--px-shade); }
+    .heart-px .w { fill: var(--px-shine); }
+    .start-btn:hover .heart-px,
+    .start-btn:focus-visible .heart-px { filter: drop-shadow(0 0 28px rgb(255 61 139 / 0.95)) brightness(1.15); }
+    .press { animation: blink 1s steps(1) infinite; }
+    .start-btn.pressed .heart-px { animation: pop 0.5s steps(5) forwards; }
+    .start-btn.pressed .press { animation: none; opacity: 0; }
+
+    @keyframes float { from { transform: translateY(8px); } to { transform: translateY(-14px); } }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 15% { transform: scale(1.08); } 30% { transform: scale(1); } 42% { transform: scale(1.05); } }
+    @keyframes blink { 50% { opacity: 0; } }
+    @keyframes pop { to { transform: scale(1.8); opacity: 0; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .heart-float, .heart-px, .press { animation: none; }
+      .start-btn.pressed .heart-px { animation: none; opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <p class="title"></p>
+  <div class="start" id="start">
+    <button class="start-btn" id="start-btn" type="button" aria-label="Start">
+      <span class="heart-float"><span class="heart-px" id="heart-px"></span></span>
+      <span class="press">PRESS START</span>
+    </button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    // ===== Change these =====
+    const CONFIG = {
+      title: "for you",
+      // Words that float around the galaxy
+      words: ["I love you"],
+    };
+
+    const COLORS = {
+      background: 0x050005,
+      galaxyInside: "#ff6fb0",
+      galaxyOutside: "#6a0f45",
+      ring: "#ffd1e6",
+      heart: "#ff3d8b",
+      heartEdge: "#ffa3cc",
+    };
+
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const TAU = Math.PI * 2;
+
+    // ===== Scene, camera, controls =====
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(COLORS.background);
+    scene.fog = new THREE.FogExp2(COLORS.background, 0.01);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 500);
+    const START = new THREE.Vector3(0, 70, 110);
+    // Phones are tall and narrow, so stand back a bit further there
+    const END = innerWidth < innerHeight ? new THREE.Vector3(0, 20, 52) : new THREE.Vector3(0, 15, 44);
+    camera.position.copy(reduceMotion ? END : START);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 7.5, 0);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    controls.minDistance = 12;
+    controls.maxDistance = 90;
+    controls.autoRotate = !reduceMotion;
+    controls.autoRotateSpeed = 0.35;
+    controls.enabled = reduceMotion; // turned on after the fly-in
+
+    // ===== Helpers =====
+    // Soft round dot used for every particle
+    function dotTexture() {
+      const c = document.createElement("canvas");
+      c.width = c.height = 64;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, "rgba(255,255,255,1)");
+      grad.addColorStop(0.35, "rgba(255,255,255,0.6)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(c);
+    }
+    const DOT = dotTexture();
+
+    function makePoints(positions, colors, size, opacity = 1) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+      const mat = new THREE.PointsMaterial({
+        size,
+        map: DOT,
+        vertexColors: true,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      return new THREE.Points(geo, mat);
+    }
+
+    // Glowing text drawn onto a canvas, shown as a sprite that always faces the camera
+    function textSprite(text, height) {
+      const c = document.createElement("canvas");
+      const g = c.getContext("2d");
+      const font = "600 64px 'Cormorant Garamond', Georgia, serif";
+      g.font = font;
+      c.width = Math.ceil(g.measureText(text).width) + 60;
+      c.height = 110;
+      g.font = font;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.shadowColor = "rgba(255, 70, 150, 0.95)";
+      g.shadowBlur = 22;
+      g.fillStyle = "#ffe3ef";
+      g.fillText(text, c.width / 2, c.height / 2);
+      const tex = new THREE.CanvasTexture(c);
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0 });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set((height * c.width) / c.height, height, 1);
+      return sprite;
+    }
+
+    function emojiSprite(emoji, size) {
+      const c = document.createElement("canvas");
+      c.width = c.height = 128;
+      const g = c.getContext("2d");
+      g.font = "100px serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(emoji, 64, 70);
+      const mat = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, opacity: 0 });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(size, size, 1);
+      return sprite;
+    }
+
+    // ===== Galaxy disk: spiral arms of pink particles =====
+    const galaxy = new THREE.Group();
+    scene.add(galaxy);
+    {
+      const count = 45000, radius = 32, arms = 3;
+      const inside = new THREE.Color(COLORS.galaxyInside);
+      const outside = new THREE.Color(COLORS.galaxyOutside);
+      const white = new THREE.Color("#ffffff");
+      const pos = [], col = [];
+      for (let i = 0; i < count; i++) {
+        const r = 3 + Math.pow(Math.random(), 1.5) * radius;
+        const angle = ((i % arms) / arms) * TAU + r * 0.22;
+        const spread = 0.45 * r;
+        const jitter = () => Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? -1 : 1) * spread;
+        pos.push(Math.cos(angle) * r + jitter(), jitter() * 0.12, Math.sin(angle) * r + jitter());
+        const c = inside.clone().lerp(outside, r / (radius + 3));
+        if (Math.random() < 0.07) c.copy(white);
+        col.push(c.r, c.g, c.b);
+      }
+      galaxy.add(makePoints(pos, col, 0.22));
+    }
+
+    // Background stars
+    {
+      const pos = [], col = [];
+      for (let i = 0; i < 4000; i++) {
+        const v = new THREE.Vector3().randomDirection().multiplyScalar(120 + Math.random() * 150);
+        pos.push(v.x, v.y, v.z);
+        const b = 0.5 + Math.random() * 0.5;
+        col.push(b, b * 0.85, b * 0.95);
+      }
+      scene.add(makePoints(pos, col, 0.9, 0.8));
+    }
+
+    // ===== Black hole with a bright spinning ring =====
+    const hole = new THREE.Mesh(new THREE.SphereGeometry(2, 48, 48), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    hole.position.y = 0.4;
+    scene.add(hole);
+
+    const ring = new THREE.Group();
+    scene.add(ring);
+    {
+      const pos = [], col = [];
+      const hot = new THREE.Color(COLORS.ring), pink = new THREE.Color(COLORS.galaxyInside);
+      for (let i = 0; i < 9000; i++) {
+        const r = 2.3 + Math.pow(Math.random(), 2) * 5;
+        const a = Math.random() * TAU;
+        pos.push(Math.cos(a) * r, 0.4 + (Math.random() - 0.5) * 0.25, Math.sin(a) * r);
+        const c = hot.clone().lerp(pink, (r - 2.3) / 5);
+        col.push(c.r, c.g, c.b);
+      }
+      ring.add(makePoints(pos, col, 0.2));
+    }
+
+    // Pink glow behind everything in the middle
+    {
+      const c = document.createElement("canvas");
+      c.width = c.height = 128;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0, "rgba(255, 90, 170, 0.55)");
+      grad.addColorStop(1, "rgba(255, 90, 170, 0)");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 128, 128);
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending, depthWrite: false }));
+      glow.scale.set(22, 22, 1);
+      glow.position.y = 0.4;
+      scene.add(glow);
+    }
+
+    // ===== Heart made of particles =====
+    const HEART_Y = 17, HEART_SIZE = 6;
+    const heart = new THREE.Group();
+    heart.position.y = HEART_Y;
+    scene.add(heart);
+    {
+      const pos = [], col = [];
+      const body = new THREE.Color(COLORS.heart), edge = new THREE.Color(COLORS.heartEdge);
+      // A 3D heart surface: points where f <= 0 are inside
+      const f = (x, y, z) => Math.pow(x * x + 2.25 * z * z + y * y - 1, 3) - x * x * y * y * y - 0.1125 * z * z * y * y * y;
+      let placed = 0;
+      while (placed < 16000) {
+        const x = (Math.random() - 0.5) * 2.6, y = (Math.random() - 0.5) * 2.6, z = (Math.random() - 0.5) * 2;
+        const v = f(x, y, z);
+        if (v > 0) continue;
+        const nearEdge = v > -0.04;
+        if (!nearEdge && Math.random() > 0.35) continue; // keep the inside lighter so the outline glows
+        pos.push(x * HEART_SIZE, y * HEART_SIZE, z * HEART_SIZE);
+        const c = nearEdge ? edge.clone().lerp(body, Math.random() * 0.6) : body;
+        col.push(c.r, c.g, c.b);
+        placed++;
+      }
+      heart.add(makePoints(pos, col, 0.2));
+    }
+
+    // ===== Swirling stream from the black hole up into the heart =====
+    const STREAM = 3500;
+    const streamData = Array.from({ length: STREAM }, () => ({
+      u: Math.random(),
+      a: Math.random() * TAU,
+      speed: 0.08 + Math.random() * 0.12,
+      wobble: Math.random() * 0.8,
+    }));
+    const stream = (() => {
+      const pos = new Array(STREAM * 3).fill(0), col = [];
+      const a = new THREE.Color(COLORS.ring), b = new THREE.Color(COLORS.heart);
+      for (let i = 0; i < STREAM; i++) {
+        const c = a.clone().lerp(b, Math.random());
+        col.push(c.r, c.g, c.b);
+      }
+      const p = makePoints(pos, col, 0.17);
+      scene.add(p);
+      return p;
+    })();
+    const STREAM_TOP = HEART_Y - HEART_SIZE * 1.05; // the heart's bottom tip
+
+    function updateStream(t, dt) {
+      const arr = stream.geometry.attributes.position.array;
+      for (let i = 0; i < STREAM; i++) {
+        const s = streamData[i];
+        s.u += s.speed * dt;
+        if (s.u > 1) s.u -= 1;
+        const y = 0.6 + s.u * (STREAM_TOP - 0.6);
+        // Wide where it leaves the hole, narrowing to a point at the heart
+        const r = (1 - s.u) * 2.4 + s.wobble * 0.3 * (1 - s.u);
+        const ang = s.a + s.u * 9 + t * 1.5;
+        arr[i * 3] = Math.cos(ang) * r;
+        arr[i * 3 + 1] = y;
+        arr[i * 3 + 2] = Math.sin(ang) * r;
+      }
+      stream.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // ===== Words and little hearts orbiting with the galaxy =====
+    const floaters = [];
+    // Wait for the handwriting-style font so the words don't draw in a fallback font
+    // Fill at least 6 spots around the galaxy, repeating the words if there are fewer
+    const SPOTS = Math.max(6, CONFIG.words.length);
+    const placed = Array.from({ length: SPOTS }, (_, i) => CONFIG.words[i % CONFIG.words.length]);
+    document.fonts.load("600 64px 'Cormorant Garamond'").catch(() => {}).then(() => placed.forEach((word, i) => {
+      const sprite = textSprite(word, 2.1);
+      const angle = (i / SPOTS) * TAU;
+      const r = 11 + (i % 3) * 5;
+      sprite.position.set(Math.cos(angle) * r, 1.2 + (i % 2) * 1.5, Math.sin(angle) * r);
+      galaxy.add(sprite);
+      floaters.push({ sprite, baseY: sprite.position.y, phase: i * 1.3 });
+    }));
+    ["💗", "💖", "💕", "💞", "💗", "💓"].forEach((emoji, i) => {
+      const sprite = emojiSprite(emoji, 2.2);
+      const angle = (i / 6) * TAU + 0.5;
+      const r = 9 + (i % 3) * 7;
+      sprite.position.set(Math.cos(angle) * r, 3 + (i % 2) * 2, Math.sin(angle) * r);
+      galaxy.add(sprite);
+      floaters.push({ sprite, baseY: sprite.position.y, phase: i * 2.1 });
+    });
+
+    // ===== Title =====
+    const title = document.querySelector(".title");
+    title.textContent = CONFIG.title;
+
+    // ===== Start screen =====
+    // The 8-bit heart, one character per pixel
+    const HEART_PIXELS = [
+      "..##...##..",
+      ".####.####.",
+      "###########",
+      "###########",
+      "###########",
+      ".#########.",
+      "..#######..",
+      "...#####...",
+      "....###....",
+      ".....#.....",
+    ];
+    function pixelHeart() {
+      const w = HEART_PIXELS[0].length + 2, h = HEART_PIXELS.length + 2;
+      const on = (x, y) => HEART_PIXELS[y - 1]?.[x - 1] === "#";
+      let rects = "";
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let cls = null;
+          if (on(x, y)) {
+            const shine = (y === 2 && (x === 3 || x === 4)) || (y === 3 && x === 2);
+            const shade = y >= 8 || (x >= w - 3 && y >= 4);
+            cls = shine ? "w" : shade ? "s" : "p";
+          } else if (on(x + 1, y) || on(x - 1, y) || on(x, y + 1) || on(x, y - 1)) {
+            cls = "o"; // outline around the heart
+          }
+          if (cls) rects += `<rect class="${cls}" x="${x}" y="${y}" width="1.02" height="1.02"/>`;
+        }
+      }
+      return `<svg viewBox="0 0 ${w} ${h}" shape-rendering="crispEdges" aria-hidden="true">${rects}</svg>`;
+    }
+    document.getElementById("heart-px").innerHTML = pixelHeart();
+
+    let startedAt = null; // when the start button was pressed
+    const startScreen = document.getElementById("start");
+    const startBtn = document.getElementById("start-btn");
+    startBtn.addEventListener("click", () => {
+      if (startedAt !== null) return;
+      startedAt = clock.elapsedTime;
+      startBtn.classList.add("pressed");
+      setTimeout(() => startScreen.classList.add("gone"), 300);
+    });
+
+    // ===== Animation =====
+    const FLY_IN = 5; // seconds for the camera to swoop in
+    const clock = new THREE.Clock();
+    const easeInOut = (v) => (v < 0.5 ? 4 * v * v * v : 1 - Math.pow(-2 * v + 2, 3) / 2);
+
+    // Heartbeat: two quick bumps, then a rest
+    function beat(t) {
+      const p = (t % 1.4) / 1.4;
+      return Math.exp(-Math.pow((p - 0.1) / 0.05, 2)) + 0.6 * Math.exp(-Math.pow((p - 0.28) / 0.05, 2));
+    }
+
+    function animate() {
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const t = clock.elapsedTime;
+      const speed = reduceMotion ? 0.3 : 1;
+
+      galaxy.rotation.y -= 0.04 * dt * speed;
+      ring.rotation.y -= 0.6 * dt * speed;
+      heart.rotation.y = Math.sin(t * 0.4) * 0.35;
+      heart.scale.setScalar(1 + (reduceMotion ? 0 : 0.07 * beat(t)));
+      updateStream(t, dt * speed);
+
+      // Seconds since the start button was pressed; the galaxy idles behind the start screen until then
+      const since = startedAt === null ? 0 : t - startedAt;
+      const fade = Math.min(1, Math.max(0, (since - 2) / 2));
+      for (const f of floaters) {
+        f.sprite.position.y = f.baseY + Math.sin(t * 0.8 + f.phase) * 0.4;
+        f.sprite.material.opacity = fade;
+      }
+      if (since > 3) title.classList.add("show");
+
+      if (!controls.enabled) {
+        // Fly-in: swoop from far above down to the viewing spot
+        const p = easeInOut(Math.min(1, since / FLY_IN));
+        camera.position.lerpVectors(START, END, p);
+        camera.lookAt(controls.target);
+        if (p >= 1) controls.enabled = true;
+      } else {
+        controls.update();
+      }
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>
