@@ -148,11 +148,17 @@
     };
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // Detail level: computers get the most particles, phones a bit fewer so they stay smooth.
+    // Raise these to add more particles; smaller dots (DOT_SCALE) make it look finer.
+    const isPhone = window.matchMedia("(pointer: coarse)").matches;
+    const DETAIL = isPhone ? 1.6 : 3;
+    const DOT_SCALE = isPhone ? 0.85 : 0.7;
+    const many = (n) => Math.round(n * DETAIL);
     const TAU = Math.PI * 2;
 
     // ===== Scene, camera, controls =====
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3)); // full sharpness on Retina and phone screens
     renderer.setSize(innerWidth, innerHeight);
     document.body.appendChild(renderer.domElement);
 
@@ -212,15 +218,15 @@
     function textSprite(text, height) {
       const c = document.createElement("canvas");
       const g = c.getContext("2d");
-      const font = "600 64px 'Cormorant Garamond', Georgia, serif";
+      const font = "600 128px 'Cormorant Garamond', Georgia, serif";
       g.font = font;
-      c.width = Math.ceil(g.measureText(text).width) + 60;
-      c.height = 110;
+      c.width = Math.ceil(g.measureText(text).width) + 120;
+      c.height = 220;
       g.font = font;
       g.textAlign = "center";
       g.textBaseline = "middle";
       g.shadowColor = "rgba(255, 70, 150, 0.95)";
-      g.shadowBlur = 22;
+      g.shadowBlur = 44;
       g.fillStyle = "#ffe3ef";
       g.fillText(text, c.width / 2, c.height / 2);
       const tex = new THREE.CanvasTexture(c);
@@ -232,12 +238,12 @@
 
     function emojiSprite(emoji, size) {
       const c = document.createElement("canvas");
-      c.width = c.height = 128;
+      c.width = c.height = 256;
       const g = c.getContext("2d");
-      g.font = "100px serif";
+      g.font = "200px serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.fillText(emoji, 64, 70);
+      g.fillText(emoji, 128, 140);
       const mat = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, opacity: 0 });
       const sprite = new THREE.Sprite(mat);
       sprite.scale.set(size, size, 1);
@@ -248,7 +254,7 @@
     const galaxy = new THREE.Group();
     scene.add(galaxy);
     {
-      const count = 45000, radius = 32, arms = 3;
+      const count = many(45000), radius = 32, arms = 3;
       const inside = new THREE.Color(COLORS.galaxyInside);
       const outside = new THREE.Color(COLORS.galaxyOutside);
       const white = new THREE.Color("#ffffff");
@@ -263,13 +269,13 @@
         if (Math.random() < 0.07) c.copy(white);
         col.push(c.r, c.g, c.b);
       }
-      galaxy.add(makePoints(pos, col, 0.22));
+      galaxy.add(makePoints(pos, col, 0.22 * DOT_SCALE));
     }
 
     // Background stars
     {
       const pos = [], col = [];
-      for (let i = 0; i < 4000; i++) {
+      for (let i = 0; i < many(4000); i++) {
         const v = new THREE.Vector3().randomDirection().multiplyScalar(120 + Math.random() * 150);
         pos.push(v.x, v.y, v.z);
         const b = 0.5 + Math.random() * 0.5;
@@ -288,14 +294,14 @@
     {
       const pos = [], col = [];
       const hot = new THREE.Color(COLORS.ring), pink = new THREE.Color(COLORS.galaxyInside);
-      for (let i = 0; i < 9000; i++) {
+      for (let i = 0; i < many(9000); i++) {
         const r = 2.3 + Math.pow(Math.random(), 2) * 5;
         const a = Math.random() * TAU;
         pos.push(Math.cos(a) * r, 0.4 + (Math.random() - 0.5) * 0.25, Math.sin(a) * r);
         const c = hot.clone().lerp(pink, (r - 2.3) / 5);
         col.push(c.r, c.g, c.b);
       }
-      ring.add(makePoints(pos, col, 0.2));
+      ring.add(makePoints(pos, col, 0.2 * DOT_SCALE));
     }
 
     // Pink glow behind everything in the middle
@@ -325,7 +331,7 @@
       // A 3D heart surface: points where f <= 0 are inside
       const f = (x, y, z) => Math.pow(x * x + 2.25 * z * z + y * y - 1, 3) - x * x * y * y * y - 0.1125 * z * z * y * y * y;
       let placed = 0;
-      while (placed < 16000) {
+      while (placed < many(16000)) {
         const x = (Math.random() - 0.5) * 2.6, y = (Math.random() - 0.5) * 2.6, z = (Math.random() - 0.5) * 2;
         const v = f(x, y, z);
         if (v > 0) continue;
@@ -336,11 +342,11 @@
         col.push(c.r, c.g, c.b);
         placed++;
       }
-      heart.add(makePoints(pos, col, 0.2));
+      heart.add(makePoints(pos, col, 0.2 * DOT_SCALE));
     }
 
     // ===== Swirling stream from the black hole up into the heart =====
-    const STREAM = 3500;
+    const STREAM = many(3500);
     const streamData = Array.from({ length: STREAM }, () => ({
       u: Math.random(),
       a: Math.random() * TAU,
@@ -354,7 +360,7 @@
         const c = a.clone().lerp(b, Math.random());
         col.push(c.r, c.g, c.b);
       }
-      const p = makePoints(pos, col, 0.17);
+      const p = makePoints(pos, col, 0.17 * DOT_SCALE);
       scene.add(p);
       return p;
     })();
@@ -383,7 +389,7 @@
     // Fill at least 6 spots around the galaxy, repeating the words if there are fewer
     const SPOTS = Math.max(6, CONFIG.words.length);
     const placed = Array.from({ length: SPOTS }, (_, i) => CONFIG.words[i % CONFIG.words.length]);
-    document.fonts.load("600 64px 'Cormorant Garamond'").catch(() => {}).then(() => placed.forEach((word, i) => {
+    document.fonts.load("600 128px 'Cormorant Garamond'").catch(() => {}).then(() => placed.forEach((word, i) => {
       const sprite = textSprite(word, 2.1);
       const angle = (i / SPOTS) * TAU;
       const r = 11 + (i % 3) * 5;
